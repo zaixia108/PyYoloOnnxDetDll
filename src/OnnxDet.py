@@ -1,21 +1,21 @@
 import ctypes
+import os.path
 import time
-
+from importlib.resources import files as resource_path
 import numpy as np
 import cv2
 
 
 class OnnxDetector:
-    def __init__(self, dll_path, model_path, conf_threshold=0.3, iou_threshold=0.5):
+    def __init__(self, model_path, names, conf_threshold=0.3, iou_threshold=0.5):
         """
         初始化ONNX检测器
-        :param dll_path: DLL文件路径
         :param model_path: ONNX模型文件路径
         :param conf_threshold: 置信度阈值
         :param iou_threshold: IoU阈值
         """
-        # 加载DLL
-        self.lib = ctypes.CDLL(dll_path)
+        dll_path = str(resource_path('YoloOnnxDet').joinpath('OnnxDet.dll'))
+        self.lib = ctypes.WinDLL(dll_path)
 
         # 设置函数原型
         self.lib.CreateDetector.restype = ctypes.c_void_p
@@ -54,6 +54,10 @@ class OnnxDetector:
         if not self.detector:
             raise RuntimeError("创建检测器失败")
 
+        if os.path.exists(model_path):
+            pass
+        else:
+            raise FileNotFoundError(f"模型文件 {model_path} 不存在")
         # 初始化检测器
         model_path_bytes = model_path.encode('utf-8')
         result = self.lib.InitDetector(
@@ -66,6 +70,12 @@ class OnnxDetector:
         if not result:
             self.lib.DestroyDetector(self.detector)
             raise RuntimeError("初始化检测器失败")
+
+        if type(names) == list:
+            self.names = [str(name) for name in names]
+        elif type(names) == str:
+            with open(names, 'r', encoding='utf-8') as f:
+                self.names = [f.strip() for f in f.readlines()]
 
     def __del__(self):
         """析构函数，释放检测器资源"""
@@ -133,8 +143,23 @@ class OnnxDetector:
             self.lib.ReleaseResults(p_boxes, p_scores, p_classes)
 
             boxes = boxes_array
-
-        return boxes, scores, class_ids
+        result = {}
+        for i in self.names:
+            result[i] = []
+        for i in range(len(boxes)):
+            p1 = int(boxes[i][0])
+            p2 = int(boxes[i][1])
+            p3 = int(boxes[i][2])
+            p4 = int(boxes[i][3])
+            lt = (p1, p2)
+            rb = (p3, p4)
+            data = {
+                'confidence': round(scores[i], 2),
+                'box': [lt, rb],
+                'center': (int((lt[0] + rb[0]) // 2), int((lt[1] + rb[1]) // 2)),
+            }
+            result[self.names[class_ids[i]]].append(data)
+        return result
 
 import time
 import cv2

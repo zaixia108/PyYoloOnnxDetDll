@@ -5,9 +5,16 @@ from importlib.resources import files as resource_path
 import numpy as np
 import cv2
 
+import ctypes
+import os.path
+import time
+from importlib.resources import files as resource_path
+import numpy as np
+import cv2
+
 
 class OnnxDetector:
-    def __init__(self, model_path, conf_threshold=0.3, iou_threshold=0.5):
+    def __init__(self, model_path, names, conf_threshold=0.3, iou_threshold=0.5):
         """
         初始化ONNX检测器
         :param model_path: ONNX模型文件路径
@@ -66,11 +73,16 @@ class OnnxDetector:
             ctypes.c_float(conf_threshold),
             ctypes.c_float(iou_threshold)
         )
-        print(result)
 
         if not result:
             self.lib.DestroyDetector(self.detector)
             raise RuntimeError("初始化检测器失败")
+
+        if type(names) == list:
+            self.names = [str(name) for name in names]
+        elif type(names) == str:
+            with open(names, 'r', encoding='utf-8') as f:
+                self.names = [f.strip() for f in f.readlines()]
 
     def __del__(self):
         """析构函数，释放检测器资源"""
@@ -138,19 +150,20 @@ class OnnxDetector:
             self.lib.ReleaseResults(p_boxes, p_scores, p_classes)
 
             boxes = boxes_array
-
-        return boxes, scores, class_ids
-
-if __name__ == "__main__":
-    detector = OnnxDetector("..\\atkfp16.onnx", 0.3, 0.5)
-    image = cv2.imread("..\\img_5.png")
-    time_list = []
-    for i in range(100):
-        t1 = time.time()
-        boxes, scores, class_ids = detector.detect(image)
-        t3 = time.time()
-        time_list.append(t3 - t1)
-    time_list.pop(0)
-    print("C++ Dll OnnxDetect Time:")
-    print(f"Average detection time: {sum(time_list) / len(time_list)} seconds")
-    print(time_list)
+        result = {}
+        for i in self.names:
+            result[i] = []
+        for i in range(len(boxes)):
+            p1 = int(boxes[i][0])
+            p2 = int(boxes[i][1])
+            p3 = int(boxes[i][2])
+            p4 = int(boxes[i][3])
+            lt = (p1, p2)
+            rb = (p3, p4)
+            data = {
+                'confidence': round(scores[i], 2),
+                'box': [lt, rb],
+                'center': (int((lt[0] + rb[0]) // 2), int((lt[1] + rb[1]) // 2)),
+            }
+            result[self.names[class_ids[i]]].append(data)
+        return result
