@@ -8,7 +8,7 @@ version = "0.0.1"
 authors = [
     { name = "zaixia108", email = "xvbowen2012@gmail.com" }
 ]
-description = "A Python package for mouse path control and training."
+description = "A Python package for yolo onnx model detect."
 readme = "README.md"
 requires-python = ">=3.8"
 license = { file = "LICENSE" }
@@ -21,7 +21,7 @@ dependencies = [
     "opencv-python",
     "numpy"
 ]
-urls = { homepage = "https://github.com/zaixia108/PyOnnxDetDll" }
+urls = { homepage = "https://github.com/zaixia108/PyYoloOnnxDetDll" }
 
 [tool.setuptools.package-data]
 YoloOnnxDet = ["*.dll"]
