@@ -3,3 +3,4 @@
 src/*.dll
 src/*.png
 src/*.jpg
+src/*.onnx
