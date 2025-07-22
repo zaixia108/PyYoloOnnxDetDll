@@ -1,16 +1,8 @@
 import ctypes
 import os.path
-import time
 from importlib.resources import files as resource_path
-import numpy as np
 import cv2
-
-import ctypes
-import os.path
-import time
-from importlib.resources import files as resource_path
 import numpy as np
-import cv2
 
 
 class OnnxDetector:
