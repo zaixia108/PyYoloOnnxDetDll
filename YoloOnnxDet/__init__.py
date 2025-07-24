@@ -1,161 +1,236 @@
-import ctypes
-import os.path
-from importlib.resources import files as resource_path
+import logging
+import time
+import traceback
+
+from .OnnxDet import OnnxDetector as _OnnxDetector
+from .OnnxDetMutTD import OnnxInferencePool as _OnnxInferencePool, TaskStatus as _TaskStatus, TaskStatus
 import cv2
-import numpy as np
+import numpy
+import gc
 
 
-class OnnxDetector:
-    def __init__(self, model_path, names, conf_threshold=0.3, iou_threshold=0.5):
-        """
-        初始化ONNX检测器
-        :param model_path: ONNX模型文件路径
-        :param conf_threshold: 置信度阈值
-        :param iou_threshold: IoU阈值
-        """
-        dll_path = str(resource_path('YoloOnnxDet').joinpath('OnnxDet.dll'))
-        self.lib = ctypes.WinDLL(dll_path)
+class ST_Detector:
+    """
+    单线程检测器，适用于单线程环境
+    """
 
-        # 设置函数原型
-        self.lib.CreateDetector.restype = ctypes.c_void_p
+    def __init__(self, model_path, names=None, conf_threshold=0.3, iou_threshold=0.5):
+        self.detector = _OnnxDetector(model_path, names, conf_threshold, iou_threshold)
 
-        self.lib.DestroyDetector.argtypes = [ctypes.c_void_p]
+    def detect(self, image):
+        return self.detector.detect(image)
 
-        self.lib.InitDetector.argtypes = [
-            ctypes.c_void_p,
-            ctypes.c_char_p,
-            ctypes.c_float,
-            ctypes.c_float
-        ]
-        self.lib.InitDetector.restype = ctypes.c_bool
-
-        self.lib.Detect.argtypes = [
-            ctypes.c_void_p,
-            ctypes.POINTER(ctypes.c_ubyte),
-            ctypes.c_int,
-            ctypes.c_int,
-            ctypes.c_int,
-            ctypes.POINTER(ctypes.POINTER(ctypes.c_float)),
-            ctypes.POINTER(ctypes.POINTER(ctypes.c_float)),
-            ctypes.POINTER(ctypes.POINTER(ctypes.c_int)),
-            ctypes.POINTER(ctypes.c_int)
-        ]
-        self.lib.Detect.restype = ctypes.c_bool
-
-        self.lib.ReleaseResults.argtypes = [
-            ctypes.POINTER(ctypes.c_float),
-            ctypes.POINTER(ctypes.c_float),
-            ctypes.POINTER(ctypes.c_int)
-        ]
-
-        # 创建检测器实例
-        self.detector = self.lib.CreateDetector()
-        if not self.detector:
-            raise RuntimeError("创建检测器失败")
-
-        if os.path.exists(model_path):
-            pass
-        else:
-            raise FileNotFoundError(f"模型文件 {model_path} 不存在")
-        # 初始化检测器
-        model_path_bytes = model_path.encode('utf-8')
-        result = self.lib.InitDetector(
-            self.detector,
-            model_path_bytes,
-            ctypes.c_float(conf_threshold),
-            ctypes.c_float(iou_threshold)
-        )
-
-        if not result:
-            self.lib.DestroyDetector(self.detector)
-            raise RuntimeError("初始化检测器失败")
-
-        if type(names) == list:
-            self.names = [str(name) for name in names]
-        elif type(names) == str:
-            with open(names, 'r', encoding='utf-8') as f:
-                self.names = [f.strip() for f in f.readlines()]
+    def warm_up(self):
+        dummy_image = numpy.zeros((640, 640, 3), dtype=numpy.uint8)
+        for i in range(5):
+            self.detector.detect(dummy_image)
+        print('Warm-up completed.')
 
     def __del__(self):
         """析构函数，释放检测器资源"""
-        if hasattr(self, 'lib') and hasattr(self, 'detector') and self.detector:
-            self.lib.DestroyDetector(self.detector)
+        if hasattr(self, 'detector') and self.detector:
+            del self.detector
             self.detector = None
+            gc.collect()
+            print("ST_Detector resources released.")
+        else:
+            print("ST_Detector already released or not initialized.")
 
-    def detect(self, image):
+class MT_Detector:
+    """
+    多线程检测器，适用于多线程环境
+    """
+    class SafeOnnxInference:
+        """ONNX推理的安全包装类"""
+
+        def __init__(self):
+            """初始化安全包装类"""
+            self.engine = None
+            self.initialized = False
+
+        def initialize(self, min_threads, max_threads, model_path):
+            """安全初始化推理引擎"""
+            try:
+                self.engine = _OnnxInferencePool()
+                if self.engine.create_pool(min_threads=min_threads,
+                                           max_threads=max_threads,
+                                           model_path=model_path):
+                    self.initialized = True
+                    print(f"成功初始化线程池，线程数: {min_threads}-{max_threads}")
+                    return True
+                else:
+                    print(f"初始化失败: {self.engine.get_last_error()}")
+                    return False
+            except Exception as e:
+                print(f"初始化过程中发生异常: {e}")
+                traceback.print_exc()
+                return False
+
+        def submit_task(self, image, conf_threshold=0.3, iou_threshold=0.5):
+            """提交任务"""
+            if not self.initialized or not self.engine:
+                return -1
+            return self.engine.submit_task(image, conf_threshold, iou_threshold)
+
+        def wait_for_task_completion(self, task_id, timeout=30.0):
+            """等待任务完成"""
+            if not self.initialized or not self.engine:
+                return False
+            return self.engine.wait_for_task_completion(task_id, timeout)
+
+        def get_task_status(self, task_id):
+            """获取任务状态"""
+            if not self.initialized or not self.engine:
+                return _TaskStatus.TASK_FAILED
+            return self.engine.get_task_status(task_id)
+
+        def get_inference_result(self, task_id):
+            """获取推理结果"""
+            if not self.initialized or not self.engine:
+                return None
+            return self.engine.get_inference_result(task_id)
+
+        def run_inference(self, image, conf_threshold=0.3, iou_threshold=0.5):
+            """运行推理并返回结果"""
+            if not self.initialized or not self.engine:
+                return {"error": "引擎未初始化"}
+
+            try:
+                task_id = self.engine.submit_task(image, conf_threshold, iou_threshold)
+                if task_id <= 0:
+                    return {"error": "任务提交失败"}
+
+                if not self.engine.wait_for_task_completion(task_id, timeout=30.0):
+                    return {"error": "任务执行超时"}
+
+                return self.engine.get_inference_result(task_id)
+            except Exception as e:
+                return {"error": f"推理过程出错: {str(e)}"}
+
+        def get_pool_status(self):
+            """获取线程池状态"""
+            if not self.initialized or not self.engine:
+                return {"error": "引擎未初始化"}
+
+            try:
+                return self.engine.get_pool_status()
+            except Exception as e:
+                return {"error": f"获取状态时出错: {str(e)}"}
+
+        def cleanup(self):
+            """安全清理资源"""
+            if not self.initialized or not self.engine:
+                return
+
+            print("执行安全清理...")
+            # 先等待所有任务完成
+            try:
+                status = self.get_pool_status()
+                if isinstance(status, dict) and "queue_size" in status:
+                    if status["queue_size"] > 0 or status["active_threads"] > status["idle_threads"]:
+                        print("等待任务完成...")
+                        time.sleep(2)  # 等待一段时间
+            except:
+                pass
+
+            # 将引擎置为None，让Python的垃圾回收来处理它
+            # 不直接调用destroy_pool()以避免崩溃
+            print("释放引擎资源")
+            self.engine = None
+            self.initialized = False
+
+            # 强制垃圾回收
+            gc.collect()
+
+            print("清理完成")
+
+    def __init__(self, model_path, names=None, conf_threshold=0.3, iou_threshold=0.5, workers=4):
+        self.detector = self.SafeOnnxInference()
+        self.names = names
+        self.conf = conf_threshold
+        self.iou = iou_threshold
+        self.detector.initialize(min_threads=workers, max_threads=workers, model_path=model_path)
+        logging.warning('Multithreaded ONNX detector is Develop Func, not Stable.')
+        logging.warning('Multithreaded ONNX detector is Develop Func, not Stable.')
+        logging.warning('Multithreaded ONNX detector is Develop Func, not Stable.')
+
+    def warm_up(self):
+        dummy_image = numpy.zeros((640, 640, 3), dtype=numpy.uint8)
+        for i in range(5):
+            warm_up_id = self.detector.submit_task(dummy_image, conf_threshold=self.conf, iou_threshold=self.iou)
+            if not self.detector.wait_for_task_completion(warm_up_id, timeout=3):
+                continue
+        print('Warm-up completed.')
+
+    def submit_task(self, image):
         """
-        执行目标检测
-        :param image: OpenCV格式的图像 (BGR)
-        :return: (boxes, scores, class_ids) 元组
+        提交检测任务
+        :param image: 输入图像
+        :return: 任务ID
         """
-        # 确保图像是BGR格式的
-        if len(image.shape) == 2:
-            image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
-        elif image.shape[2] == 4:
-            image = cv2.cvtColor(image, cv2.COLOR_BGRA2BGR)
+        return self.detector.submit_task(image, conf_threshold=self.conf, iou_threshold=self.iou)
 
-        # 获取图像信息
-        height, width, channels = image.shape
+    def wait_for_task_completion(self, task_id, timeout=3.0):
+        """
+        等待任务完成
+        :param task_id: 任务ID
+        :param timeout: 超时时间
+        :return: 是否成功完成任务
+        """
+        return self.detector.wait_for_task_completion(task_id, timeout)
 
-        # 准备输出参数
-        p_boxes = ctypes.POINTER(ctypes.c_float)()
-        p_scores = ctypes.POINTER(ctypes.c_float)()
-        p_classes = ctypes.POINTER(ctypes.c_int)()
-        count = ctypes.c_int(0)
+    def get_task_status(self, task_id):
+        """
 
-        # 获取图像数据指针
-        img_data = image.ctypes.data_as(ctypes.POINTER(ctypes.c_ubyte))
+        :param task_id:
+        :return:
+        """
+        if self.detector.get_task_status(task_id) == TaskStatus.TASK_COMPLETED:
+            return True
+        else:
+            return False
 
-        # 执行检测
-        result = self.lib.Detect(
-            self.detector,
-            img_data,
-            width,
-            height,
-            channels,
-            ctypes.byref(p_boxes),
-            ctypes.byref(p_scores),
-            ctypes.byref(p_classes),
-            ctypes.byref(count)
-        )
-
-        if not result:
-            raise RuntimeError("检测过程发生错误")
-
-        # 处理检测结果
-        num_detections = count.value
-        boxes = []
-        scores = []
-        class_ids = []
-
-        if num_detections > 0:
-            # 将C指针转换为NumPy数组
-            boxes_array = np.zeros((num_detections, 4), dtype=np.float32)
-            for i in range(num_detections):
-                for j in range(4):
-                    boxes_array[i, j] = p_boxes[i * 4 + j]
-
-            scores = np.array([p_scores[i] for i in range(num_detections)], dtype=np.float32)
-            class_ids = np.array([p_classes[i] for i in range(num_detections)], dtype=np.int32)
-
-            # 释放C++端分配的内存
-            self.lib.ReleaseResults(p_boxes, p_scores, p_classes)
-
-            boxes = boxes_array
-        result = {}
+    def get_result(self, task_id):
+        """
+        获取任务结果
+        :param task_id: 任务ID
+        :return: 检测结果
+        """
+        result = self.detector.get_inference_result(task_id)
+        results = {}
         for i in self.names:
-            result[i] = []
-        for i in range(len(boxes)):
-            p1 = int(boxes[i][0])
-            p2 = int(boxes[i][1])
-            p3 = int(boxes[i][2])
-            p4 = int(boxes[i][3])
-            lt = (p1, p2)
-            rb = (p3, p4)
-            data = {
-                'confidence': round(scores[i], 2),
-                'box': [lt, rb],
-                'center': (int((lt[0] + rb[0]) // 2), int((lt[1] + rb[1]) // 2)),
-            }
-            result[self.names[class_ids[i]]].append(data)
-        return result
+            results[str(i)] = []
+        try:
+            count = result['detection_count']
+        except KeyError:
+            logging.error("检测结果中未包含 'detection_count' 键，可能是推理未完成或推理失败。")
+            return results
+        if result['detection_count'] > 0 and 'detections' in result:
+            for i in range(result['detection_count']):
+                detection = result['detections'][i]
+                cid = int(detection['class_id'])
+                p1 = int(detection['box']['x'])
+                p2 = int(detection['box']['y'])
+                p3 = p1 + int(detection['box']['width'])
+                p4 = p2 + int(detection['box']['height'])
+                data = {
+                    'confidence': round(detection['confidence'], 2),
+                    'box': [(p1, p2), (p3, p4)],
+                    'center': (int((p1 + p3) // 2), int((p2 + p4) // 2)),
+                }
+                results[str(self.names[cid])].append(data)
+        return results
+
+    def get_pool_status(self):
+        """
+        获取线程池状态
+        :return: 线程池状态
+        """
+        return self.detector.get_pool_status()
+
+    def cleanup(self):
+        """
+        清理资源
+        """
+        self.detector.cleanup()
+        print("MT_Detector resources released.")
