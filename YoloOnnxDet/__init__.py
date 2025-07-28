@@ -18,8 +18,8 @@ class ST_Detector:
     单线程检测器，适用于单线程环境
     """
 
-    def __init__(self, model_path, names=None, conf_threshold=0.3, iou_threshold=0.5):
-        self.detector = _OnnxDetector(model_path, names, conf_threshold, iou_threshold)
+    def __init__(self, model_path, names=None, conf_threshold=0.3, iou_threshold=0.5, use_gpu=True):
+        self.detector = _OnnxDetector(model_path, names, conf_threshold, iou_threshold, use_gpu)
 
     def detect(self, image):
         return self.detector.detect(image)

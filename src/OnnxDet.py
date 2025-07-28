@@ -7,7 +7,7 @@ import cv2
 
 
 class OnnxDetector:
-    def __init__(self, model_path, names, conf_threshold=0.3, iou_threshold=0.5):
+    def __init__(self, model_path, names, conf_threshold=0.3, iou_threshold=0.5, use_gpu=True):
         """
         初始化ONNX检测器
         :param model_path: ONNX模型文件路径
@@ -26,7 +26,8 @@ class OnnxDetector:
             ctypes.c_void_p,
             ctypes.c_char_p,
             ctypes.c_float,
-            ctypes.c_float
+            ctypes.c_float,
+            ctypes.c_bool
         ]
         self.lib.InitDetector.restype = ctypes.c_bool
 
@@ -64,7 +65,8 @@ class OnnxDetector:
             self.detector,
             model_path_bytes,
             ctypes.c_float(conf_threshold),
-            ctypes.c_float(iou_threshold)
+            ctypes.c_float(iou_threshold),
+            ctypes.c_bool(use_gpu)
         )
 
         if not result:

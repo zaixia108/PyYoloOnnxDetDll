@@ -9,6 +9,7 @@ std = YoloOnnxDet.ST_Detector(
     names=[1, 2, 3, 4, 5, 6, 7],
     conf_threshold=0.3,
     iou_threshold=0.5,
+    use_gpu=True
 )
 
 RANGE = 200
