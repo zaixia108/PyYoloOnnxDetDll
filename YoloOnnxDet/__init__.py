@@ -9,6 +9,10 @@ import numpy
 import gc
 
 
+class DevFeature:
+    EnableMultithreaded = False
+
+
 class ST_Detector:
     """
     单线程检测器，适用于单线程环境
@@ -145,6 +149,8 @@ class MT_Detector:
             print("清理完成")
 
     def __init__(self, model_path, names=None, conf_threshold=0.3, iou_threshold=0.5, workers=4):
+        if not DevFeature.EnableMultithreaded:
+            raise RuntimeError("多线程检测器功能未启用，如果需要启用，请设置 DevFeature.EnableMultithreaded = True")
         self.detector = self.SafeOnnxInference()
         self.names = names
         self.conf = conf_threshold

@@ -15,14 +15,12 @@ RANGE = 200
 
 std.warm_up()
 img = cv2.imread('src/img_5.png')
+
+t1 = time.time()
 result = std.detect(img)
 print(result)
-
-tt1 = time.time()
-for i in range(RANGE):
-    result = std.detect(img)
-tt2 = time.time()
-print(f"Single-thread detection time: {(tt2 - tt1) * 1000:.2f} ms {RANGE} image")
+t2 = time.time()
+print(f"Single-thread detection time: {(t2 - t1) * 1000:.2f} ms 1 image")
 
 mtd = YoloOnnxDet.MT_Detector(
     model_path='src/atkfp16.onnx',
